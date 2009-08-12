@@ -20,10 +20,10 @@
   (test (send/recv nch "BOOO") => "BOOO"))
 
 
-(sleep 2)
+;(sleep 2)
 (kill-place p1)
 (kill-place p2)
-(sleep 2)
+;(sleep 2)
 (exit 0)
 ;(connect-places p1 p2)
 

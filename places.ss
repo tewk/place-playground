@@ -3,9 +3,12 @@
 (require scheme/async-channel)
 (require mzlib/os)
 (require scheme/serialize)
+(require scheme/runtime-path)
 
-;places demo prototype
+;places prototype
 ;places are modelled as processes
+;multiplexed-channel serves as a backbone channel between process
+;pchannels are the channels processe actually use to communicate
 
 
 (provide
@@ -14,19 +17,24 @@
  (struct-out place)
  (struct-out new-channel-mesg)
  send/recv
- register-child
  create-place
  kill-place
  place-wait
- place-child
  make-place-channel
+ 
+ ;internal
+ place-child
  place-vchannel
  log)
+
+
+(define (say x) (printf "~a~n" x))
 
 (define-struct place (pid ch cntrl err))
 
 (define (kill-place pl)
   ((place-cntrl pl) 'kill))
+
 (define (place-wait pl)
   (let ((cntrl (place-cntrl pl)))
     (cntrl 'wait)
@@ -56,6 +64,12 @@
 
 (define pump #f)
 (define (start-pump)
+  (define lastchid 0)
+  (define (new-channel-id)
+    (let ((newid lastchid))
+      (set! lastchid (+ 1 lastchid))
+      (format "~a_~a" (getpid) newid)))
+  
   (define id-to-ch (make-hash))
   (define ch-to-id (make-hash))
   (define evtlst (list))
@@ -192,7 +206,6 @@
     (channel-get comch)))
 
 ;========================== pchannel
-
 (define-struct pchannel (in out))
 (define (make-place-channel) (make-pchannel (make-async-channel) (make-async-channel)))
 (define (pchansend ch x)     (async-channel-put (pchannel-in ch) x))
@@ -215,20 +228,13 @@
   (deserialize (read (multiplexed-channel-in ch))))
 
 
-(define lastchid 0)
-(define (new-channel-id)
-  (let ((newid lastchid))
-    (set! lastchid (+ 1 lastchid))
-    (format "~a_~a" (getpid) newid)))
-
-(define (sstos x)
-  (cond [(symbol? x) (symbol->string x)]
-        [(string? x) x]
-        [else (raise "~a is not a string or symbol" x)])) 
-
+;=========================== create-place
+(define-runtime-path places-ss-path "places.ss")
+(define-runtime-path place-worker-ss-path "place-worker.ss")
 (define (create-place module-name func-name)
   (match-let ([(list cout cin pid cerr cntrl)
-               (process (format "~a -t place-worker.ss" (find-system-path 'exec-file)))])
+               ;(process* (find-system-path 'exec-file) "-t" (path->string places-ss-path) "-l" "scheme/base" "-e" "'(place-child)'" ))])
+               (process* (find-system-path 'exec-file) "-t" (path->string place-worker-ss-path))])
     (let ((pl (make-place pid (register-place cout cin cerr) cntrl cerr)))
       (pchansend (place-ch pl) (make-new-child-mesg module-name func-name))
       pl)))
