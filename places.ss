@@ -233,6 +233,7 @@
 (define-runtime-path place-worker-ss-path "place-worker.ss")
 (define (create-place module-name func-name)
   (match-let ([(list cout cin pid cerr cntrl)
+               ;(process (format "~a -t ~a" (find-system-path 'exec-file) (path->string place-worker-ss-path)))])
                ;(process* (find-system-path 'exec-file) "-t" (path->string places-ss-path) "-l" "scheme/base" "-e" "'(place-child)'" ))])
                (process* (find-system-path 'exec-file) "-t" (path->string place-worker-ss-path))])
     (let ((pl (make-place pid (register-place cout cin cerr) cntrl cerr)))
