@@ -1,9 +1,9 @@
-#lang scheme
-(require scheme/system)
-(require scheme/async-channel)
-(require mzlib/os)
-(require scheme/serialize)
-(require scheme/runtime-path)
+#lang racket
+(require racket/system
+ racket/async-channel
+ racket/serialize
+ racket/runtime-path
+ mzlib/os)
 
 ;places prototype
 ;places are modelled as processes
@@ -12,37 +12,35 @@
 
 
 (provide
- (rename-out (pchanrecv recv) 
-             (pchansend send))
- (struct-out place)
- (struct-out new-channel-mesg)
- send/recv
- create-place
- kill-place
- place-wait
- make-place-channel
- 
- ;internal
- place-child
- place-vchannel
- log)
+  place
+  place-wait
+  place-kill
+  place-channel
+  place-channel-recv
+  place-channel-send
+  (struct-out new-channel-mesg)
+  place-channel-send/recv
+  
+  ;internal
+  place-child
+  place-vchannel
+  log)
 
 
 (define (say x) (printf "~a~n" x))
 
-(define-struct place (pid ch cntrl err))
+(define-struct place-s (pid ch subprocess-obj err))
 
-(define (kill-place pl)
-  ((place-cntrl pl) 'kill))
+(define (place-kill pl) (subprocess-kill (place-s-subprocess-obj pl) #t))
 
 (define (place-wait pl)
-  (let ((cntrl (place-cntrl pl)))
-    (cntrl 'wait)
-    (cntrl 'exit-code)))
+  (let ((spo (place-s-subprocess-obj pl)))
+    (subprocess-wait spo)
+    (subprocess-status spo)))
 
-(define (send/recv ch x)
-  (pchansend ch x)
-  (pchanrecv ch))
+(define (place-channel-send/recv ch x)
+  (place-channel-send ch x)
+  (place-channel-recv ch))
 
 (define LH #f)
 (define (log msg)
@@ -93,7 +91,7 @@
   
   
   (define (mk-local-endpoint muxch myid otherid)
-    (let* ((ch (make-place-channel)))
+    (let* ((ch (place-channel)))
       (reg-endpoint muxch myid otherid ch)))
   
   (define (forward-message destid msg)
@@ -207,11 +205,15 @@
 
 ;========================== pchannel
 (define-struct pchannel (in out))
-(define (make-place-channel) (make-pchannel (make-async-channel) (make-async-channel)))
-(define (pchansend ch x)     (async-channel-put (pchannel-in ch) x))
-(define (pchanrecv ch)       (async-channel-get (pchannel-out ch)))
-(define (i_pchansend ch x)   (async-channel-put (pchannel-out ch) x))
-(define (i_pchanrecv ch)     (async-channel-get (pchannel-in ch)))
+(define (place-channel) (make-pchannel (make-async-channel) (make-async-channel)))
+(define (resolve->channel o)
+  (match o
+    [(? place-s? p) (place-s-ch p)]
+    [(? pchannel? p) p]))
+(define (place-channel-send ch x)     (async-channel-put (pchannel-in  (resolve->channel ch)) x))
+(define (place-channel-recv ch)       (async-channel-get (pchannel-out (resolve->channel ch))))
+(define (i_pchansend ch x)            (async-channel-put (pchannel-out ch) x))
+(define (i_pchanrecv ch)              (async-channel-get (pchannel-in ch)))
 
 ;=========================== multiplexed-channel
 (define-struct multiplexed-channel (in out))
@@ -230,19 +232,18 @@
 
 ;=========================== create-place
 (define-runtime-path places-ss-path "places.ss")
-(define-runtime-path place-worker-ss-path "place-worker.ss")
-(define (create-place module-name func-name)
-  (match-let ([(list cout cin pid cerr cntrl)
-               ;(process (format "~a -t ~a" (find-system-path 'exec-file) (path->string place-worker-ss-path)))])
-               ;(process* (find-system-path 'exec-file) "-t" (path->string places-ss-path) "-l" "scheme/base" "-e" "'(place-child)'" ))])
-               (process* (find-system-path 'exec-file) "-t" (path->string place-worker-ss-path))])
-    (let ((pl (make-place pid (register-place cout cin cerr) cntrl cerr)))
-      (pchansend (place-ch pl) (make-new-child-mesg module-name func-name))
+
+(define (place module-name func-name)
+  (let-values ([(sp out in err)
+      (subprocess #f #f #f (find-system-path 'exec-file) "-e" "(eval(read))")])
+    (write `((dynamic-require (bytes->path ,(path->bytes places-ss-path)) (quote place-child))) in)
+    (let ([pl (make-place-s (subprocess-pid sp) (register-place out in err) sp err)])
+      (place-channel-send pl (make-new-child-mesg module-name func-name))
       pl)))
 
 (define (place-child)
   (let* ((ch (register-child (current-input-port) (current-output-port)))
-         (msg (pchanrecv ch)))
+         (msg (place-channel-recv ch)))
     (match msg
       [(struct new-child-mesg (module-name func-name)) ((dynamic-require module-name (string->symbol func-name)) ch)]
       [_ (raise (format "Place child expected new-child-mesg got ~a~n" msg))])))
